@@ -1,0 +1,51 @@
+==========
+Aliter FAQ
+==========
+
+General Questions
+=================
+
+Why does this project exist?
+----------------------------
+
+What does Aliter mean, and how is it pronounced?
+------------------------------------------------
+
+What makes this project different from all the others? They all do the same thing.
+----------------------------------------------------------------------------------
+
+Who's behind this?
+------------------
+
+Well, this emulator does this. Why can't Aliter?
+------------------------------------------------
+
+Installation Questions
+======================
+
+How do I get started?
+---------------------
+
+What do I need to run Aliter?
+-----------------------------
+
+Getting Help
+============
+
+How do I do X? Why doesn't Y work? Where can I go to get help?
+--------------------------------------------------------------
+
+I think I've found a bug! What should I do?
+-------------------------------------------
+
+I think I've found a security problem! What should I do?
+--------------------------------------------------------
+
+Contributing to Aliter
+======================
+
+How can I start contributing to Aliter?
+---------------------------------------
+
+I submitted a fix weeks ago! Why are you ignoring it?
+-----------------------------------------------------
