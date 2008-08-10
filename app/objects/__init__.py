@@ -8,3 +8,5 @@ from npc import *
 from servers import *
 from skill import *
 from warp import *
+from item import *
+from inventory import *

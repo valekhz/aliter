@@ -8,7 +8,6 @@ from app.packets import generatePacket as _, receivedPackets, sendPacket, encode
 from app.misc import getTick
 from app.inter import checkLoginID, unsetLoginID, getLoginIDa, getLoginIDb
 from app.event import Event
-from app.script import Scripts
 
 
 class MapSession(Session):
@@ -60,26 +59,13 @@ class MapSession(Session):
         # Say something
         self.sendPacket(
             0x8e,
-            message='Welcome to Aliter',
+            message = "Welcome to Aliter",
         )
         
         Event._registerActorView(self.character)
         Event._showActors(self.character)
         
-        # Display all actors on current map
-        for npc in maps[self.character.map].npcs.values():
-            self.sendPacket(
-                'viewNPC',
-                actorID=npc.id,
-                sprite=npc.sprite,
-                position=encodePosition(npc.x, npc.y, npc.dir),
-            )
-        for warp in maps[self.character.map].warps.values():
-            self.sendPacket(
-                'viewWarp',
-                actorID=warp.id,
-                position=encodePosition(warp.x, warp.y),
-            )
+        self.character.loadInventory()
     
     def move(self, position):
         if not self.character:
@@ -107,87 +93,36 @@ class MapSession(Session):
                 name=maps[self.character.map].players[actorID].name
             )
     
-    def _npcExecute(self):
-        "Continue to execute an NPC script"
-        while 1:
-            self.npc = Scripts.execute(self.npc)
-            halt     = self.npc['halt']
-            if self.npc['offset'] < 0:
-                self.npc = None
-                halt     = True
-            if halt:
-                break
-    
     def npcActivate(self, npcID):
         if not self.character:
             raise IllegalPacket
+        
         if npcID not in maps[self.character.map].npcs:
             return
         
-        npc = maps[self.character.map].npcs[npcID]
-        self.log('Request to talk to "%s"' % npc.name)
-        self.npc = {
-            'file': npc.scriptFile,
-            'offset': npc.scriptOffset,
-            'register': None,
-            'vars': {
-                'character': self.character,
-            },
-            'extra': {
-                'npc': npc,
-                'sayName': npc.name,
-            },
-            'halt': False,
-        }
+        self.npc = maps[self.character.map].npcs[npcID]
         
-        self._npcExecute()
+        self.npc.run(self.character)
     
-    def npcNext(self, npcID):
+    def npcNext(self, accountID, function = None):
         if not self.character:
             raise IllegalPacket
         
-        if not self.npc \
-        or self.npc['extra']['npc'].id != npcID \
-        or self.npc['register'] != '_next':
-            return
-        
-        self._npcExecute()
+        self.npc.script.nextFunc()
     
-    def npcClosed(self, npcID):
+    def npcClosed(self, accountID):
         if not self.character:
             raise IllegalPacket
         
-        if not self.npc \
-        or self.npc['extra']['npc'].id != npcID \
-        or self.npc['register'] not in ('_close', '_close2'):
-            return
-        
-        if self.npc['register'] == '_close':
-            self.npc = None
-        else:
-            self._npcExecute()
+        self.npc = None
     
-    def npcMenuSelect(self, npcID, selection):
+    def npcMenuSelect(self, accountID, selection):
         if not self.character:
             raise IllegalPacket
         
-        if not self.npc \
-        or self.npc['extra']['npc'].id != npcID \
-        or self.npc['register'] not in ('_select', '_prompt'):
-            return
-        
-        if selection == 255 and self.npc['register'] == '_select':
-            # User clicked cancel
-            if 'cutin' in self.npc['extra']:
-                self.sendPacket(
-                    0x1b3,
-                    filename='',
-                    position=255,
-                )
-            self.npc = None
-        else:
-            self.npc['register'] = selection
-            self._npcExecute()
+        menu = self.npc.script.menu
+        selected = menu.keys()[selection - 1]
+        menu[selected]()
     
     def menuButton(self, type):
         if not self.character:
@@ -241,24 +176,27 @@ class MapSession(Session):
         
         self.sendPacket(
             0x14e,
-            type=0x57,
+            type = 0x57 # Just say they're a member for now.
         )
     
     def guildInfo(self, page):
         if not self.character:
             raise IllegalPacket
         
+        if not self.character.guildID:
+            return
+        
         self.sendPacket(
             0x150,
-            guildID=0,
-            level=0,
-            capacity=0,
-            exp=0,
-            nextExp=0,
-            tax=0,
-            members=0,
-            name='Fake Guild',
-            master='Aliter',
+            guildID = 0,
+            level = 0,
+            capacity = 0,
+            exp = 0,
+            nextExp = 0,
+            tax = 0,
+            members = 0,
+            name = 'Fake Guild',
+            master = 'Aliter',
         )
     
     def quit(self):
@@ -312,3 +250,24 @@ class MapSession(Session):
             0x9a,
             message = message
         ))
+    
+    def characterName(self, characterID):
+        """
+        Returns the name of the character with the given ID, or "Nameless".
+        """        
+        player = Characters.get(characterID)
+        
+        if not player:
+            self.log("Character %s not found." % characterID)
+            self.sendPacket(
+                0x194,
+                actorID = 0,
+                name = "Nameless"
+            )
+            return
+        
+        self.sendPacket(
+            0x194,
+            actorID = player.id,
+            name = player.name
+        )

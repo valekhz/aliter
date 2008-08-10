@@ -1,6 +1,8 @@
 import re
 import thread
 
+from app import log
+
 from app.constants import MAIN_THREAD
 
 from struct import pack, unpack, calcsize
@@ -44,18 +46,28 @@ receivedPackets = {
         0x090: ['npcActivate', 'lx', 'npcID'], # Activate NPC
         0x099: ['announce', 'h!', 'packetLen', 'message'], # /b Message
         0x09b: ['identify', 'xxlxlxxxxLxxxxx', 'accountID', 'characterID', 'loginIDa'],
+        0x0a2: ['characterName', '9xl', 'characterID'], # Request character name of forged item
         0x0a7: ['move', 'xxx3s', 'position'], # Character movement
         0x0b2: ['menuButton', 'B', 'type'], # Character select / Last save point menu button
-        0x0b8: ['npcMenuSelect', 'lB', 'npcID', 'selection'], # Selected item from NPC menu (First=1)
-        0x0b9: ['npcNext', 'l', 'npcID'], # Clicked the NPC next button
+        0x0b8: ['npcMenuSelect', 'lB', 'accountID', 'selection'], # Selected item from NPC menu (First=1)
+        0x0b9: ['npcNext', 'l', 'accountID'], # Clicked the NPC next button
         0x0bf: ['emotion', 'B', 'emotion'], # Character emotion
         0x0f3: ['speech', 'h!', 'packetLen', 'message'], # Talking
-        0x143: ['npcNumInput', 'l', 'npcID'], # NPC numerical input
-        0x146: ['npcClosed', 'l', 'npcID'], # NPC close button was pressed
+        0x143: ['npcNumInput', 'l', 'accountID'], # NPC numerical input
+        0x146: ['npcClosed', 'l', 'accountID'], # NPC close button was pressed
         0x14d: ['guildPage'], # Request guild page
         0x14f: ['guildInfo', 'l', 'page'], # Request guild information tab
+        0x151: ['guildEmblem', 'l', 'guildID'], # Request guild emblem
+        0x159: ['guildLeave', 'lll40s', 'guildID', 'accountID', 'characterID', 'message'], # Leaving guild
+        0x15b: ['guildExpel', 'lll40s', 'guildID', 'accountID', 'characterID', 'message'], # Expel from guild
+        0x165: ['guildCreate', 'l24s', 'accountID', 'guildName'], # Create guild
+        0x168: ['guildInvite', 'lll', 'accountID', 'inviterAccountID', 'characterID'], # Invite
+        0x16b: ['guildReject', 'll', 'guildID', 'type'], # Guild request response (type: 1 = accept, 0 = reject)
+        0x16e: ['guildSetAnnouncement', 'l60s120s', 'guildID', 'title', 'body'], # Set guild announcement
+        0x170: ['guildAllianceRequest', 'lll', 'accountID', 'sourceAccountID', 'characterID'], # Send guild alliance request (FIXME: The names of these arguments need to be verified.)
+        0x172: ['guildAllianceRespond', 'll', 'accountID', 'type'], # Respond to guild alliance request (type: 1 = accept, 0 = rejext)
         0x18a: ['quit', 'xx'],
-        0x1d5: ['npcStrInput', 'wl!', 'packetLen', 'npcID', 'message'], # NPC string input (NUL terminated)
+        0x1d5: ['npcStrInput', 'wl!', 'packetLen', 'accountID', 'message'], # NPC string input (NUL terminated)
         0x21d: [None, 'l', 'disabled'], # Does user have /effect disabled?
     },
 }
@@ -77,14 +89,16 @@ sentPackets = {
             'name', 'str', 'agi', 'vit', 'int', 'dex', 'luk', 'charNum', 1
         )
     ),
+    "inventoryItem": ('2h2BH2x4H', ('index', 'itemID', 'type', 'identified', 'amount', 'card1', 'card2', 'card3', 'card4')),
+    "inventoryEquip": ('hhBBhhxB4h', ('index', 'itemID', 'type', 'identified', 'equipLocations', 'equipPoint', 'refine', 'card1', 'card2', 'card3', 'card4')),
     
     #------------------------------------------------------
     # Special versions of packets
     
-    'ack':      ('l', ('accountID',)), # Acknowledge login/char server connection
+    'ack':      ('l', ('accountID',)), # Acknowledge login/char server connection (0283 prefixed)
     'map':      ('hl', (0x0187, 'accountID',)), # Acknowledge map server connection
-    'viewNPC':  ('hlh6xh30x3s2Bxxx', (0x78, 'actorID', 200, 'sprite', 'position', 5, 5)), # Display NPC on map
-    'viewWarp': ('hlh6xh30x3s2Bxxx', (0x78, 'actorID', 200, 45, 'position', 5, 5)), # Display warp on map
+    'viewNPC':  ('hxlh6xh30x3s3xB', (0x78, 'actorID', 200, 'sprite', 'position', 1)), # Display NPC on map
+    'viewWarp': ('hxlh6xh30x3s3xB', (0x78, 'actorID', 200, 45, 'position', 1)), # Display warp on map
     
     #------------------------------------------------------
     # Login server packets
@@ -118,21 +132,44 @@ sentPackets = {
     0x091: ('16shh', ('map', 'x', 'y')), # Change map on same server
     0x095: ('l24s', ('actorID', 'name')), # Display actor name
     0x09a: ('h!', ('packetLen', 'message')), # /b Message
-    0x0b0: ('hl', ('type', 'value')), # Update character stats
+    0x0a0: ('3h3B5h2B', ('index', 'amount', 'itemID', 'identified', 'broken', 'refine', 'card1', 'card2', 'card3', 'card4', 'equipLocations', 'type', 'fail')), # Item receiving
+    0x0a4: ('h!', ('packetLen', 'data')), # Equipment (inventory)
+    0x0b0: ('hl', ('type', 'value')), # Update character stats (type: 0 = speed (* 1000), 3 = ?, 4 = mute (seconds), 5 = HP, 6 = Max HP, 7 = SP, 8 = Max SP, 9 = status points, 11 = base level, 12 = skill points, 24 = weight, 25 = max weight, 41 = attack, 42 = attack bonus, 43 = matk max, 44 = matk min, 45 = defense, 46 = defense bonus, 47 = mdef, 48 = mdef bonus, 49 = hit, 50 = flee, 51 = flee bonus, 52 = critical, 53 = aspd, 55 = job level, 124 = ?)
+    0x0b1: ('hl', ('type', 'value')), # Update other char stats (type: 1 = bexp, 2 = jexp, 20 = zeny, 22 = bexp required, 23 = jexp required)
     0x0b3: ('l', ('type',)), # Returned to character select screen
     0x0b4: ('hl!', ('packetLen', 'actorID', 'message')), # NPC message
     0x0b5: ('l', ('actorID',)), # NPC next button
     0x0b6: ('l', ('actorID',)), # NPC close button
     0x0b7: ('hl!', ('packetLen', 'actorID', 'items')), # NPC menu (Items seperated by ":")
+    0x0bd: ('h12B11h4x', ('statusPoint', 'str', 'bstr', 'agi', 'bagi', 'vit', 'bvit', 'int', 'bint', 'dex', 'bdex', 'luk', 'bluk', 'atk', 'batk', 'matkmax', 'matkmin', 'def', 'bdef', 'mdef', 'bmdef', 'hit', 'flee', 'bflee', 'critical')), # Update stats
     0x0c0: ('lB', ('actorID', 'emotion')), # Display emotion with ID
+    0x0cd: ('B', (0x81,)), # Player kicked.
+    0x10f: ('h!', ('packetLen', 'data')), # Skill info (Data: <skill ID>.w <target type>.w ?.w <lv>.w <sp>.w <range>.w <skill name>.24B <up>.B)
+    0x13a: ('h', ('range',)), # Attack range
+    0x141: ('lll', ('type', 'base', 'bonus')), # Update a single stat (type: 13-18 = str, agi, vit, int, dex, luk)
     0x142: ('l', ('actorID',)), # NPC numerical input
     0x144: ('4l4Bx', ('actorID', 'type', 'x', 'y', 'pointID', 'red', 'green', 'blue')), # Mark the minimap (Type 2 = Remove)
-    0x14e: ('l', ('type',)), # Guild page response
+    0x14e: ('l', ('type',)), # Guild page response (87 or 0x57 = member, 215 or 0xd7 = guild master)
     0x150: ('11l24s24s16s', ('guildID', 'level', 0, 'capacity', 0, 'exp', 'nextExp', 'tax', 0, 0, 'members', 'name', 'master', '')), # Guild information response
+    0x152: ('hll!', ('packetLen', 'guildID', 'emblemID', 'emblem')), # Send guild emblem
+    0x154: ('h!', ('packetLen', 'info')), # Info: {<accID>.l <charactorID>.l <?>.w <?.w <?>.w <job>.w <lvl?>.w <?>.l <online>.l <Position>.l ?.50B <nick>.24B} [repeated for each character]
+    0x15a: ('24s40s', ('charName', 'message')), # Person left the guild
+    0x15c: ('24s40s24x', ('charName', 'message')), # Person expelled from guild
+    0x167: ('b', ('status',)), # Guild creation result (0 = success, 2 = name taken, 1 and 2 are probably "no emperium" and "invalid name", but I haven't checked (FIXME))
+    0x169: ('b', ('type',)), # Guild invitation denied
+    0x16a: ('l24s', ('guildID', 'name')), # Invited to guild (confirm dialogue)
+    0x16c: ('l24s', ('guildID', 'name')), # Guild information
+    0x16d: ('lll', ('guildID', 'characterID', 'online')), # Guild member has signed in
+    0x16f: ('60s120s', ('title', 'body')), # Guild announcement
+    0x171: ('l24s', ('sourceAccountID', 'name')), # Guild alliance invite
+    0x173: ('b', ('type',)), # Alliance invite response
+    0x17f: ('h!', ('packetLen', 'message')), # Guild chat message
     0x18b: ('l', ('failure',)), # Quit response
+    0x194: ('l24s', ('actorID', 'name')), # Response to name request, e.g. forger names
     0x1b3: ('64sB', ('filename', 'position')), # NPC cut-in image
     0x1d4: ('l', ('actorID',)), # NPC string input
     0x1d7: ('lbhh', ('accountID', 'equip', 'w1', 'w2')), # Equip view grabbing
+    0x1ee: ('h!', ('packetLen', 'data')), # Inventory (data: 'index', 'itemID', 'type', 'identified', 'broken', 'card1', 'card2', 'card3', 'card4')
     0x1f3: ('lh2x', ('accountID', 'effect')), # Effects
     # This beast handles a few times when a user should show up for other people. [Alex]
     0x22b: ('l4h2x10hl3h2x2b5sh', ('accountID', 'speed', 'opt1', 'opt2', 'opt3', 'job', 'hstyle', 'weapon', 'shield', 'lowhead', 'tophead', 'midhead', 'hcolor', 'ccolor', 'headdir', 'guildID', 'guildEmblem', 'manner', 'effect', 'karma', 'sex', 'position', 'blevel')),
@@ -164,7 +201,7 @@ def generatePacket(packetID, **kwargs):
                     packetLenOffset = offset
                     arguments.append(0)
                 else:
-                    raise MissingArgument
+                    log.console("Missing argument for packet %s: %s" % (packetID, argument), log.CRITICAL)
                 
                 continue
             
@@ -224,7 +261,9 @@ def generatePacket(packetID, **kwargs):
             packetLenOffset += 1
         
         arguments[packetLenOffset] = calcsize(packetLayout)
-
+    
+    # log.console("Packing %s as %s! Args: %s" % (packetID, packetLayout, kwargs), log.HIGH)
+    
     return pack(packetLayout, *arguments)
 
 def sendPacket(function, packetID, **kwargs):
@@ -235,7 +274,10 @@ def sendPacket(function, packetID, **kwargs):
             reactor.callFromThread(function, packet)
         else:
             function(packet)
+        
         return True
+    
+    log.console("Sending packet %d failed!" % int(packetID), log.HIGH)
     
     return False
 

@@ -8,7 +8,7 @@ from twisted.internet.task import LoopingCall
 import log
 from shared import config, maps
 from constants import *
-from objects import Actor, Character, Characters, Accounts
+from objects import Characters, Accounts
 from packets import generatePacket as _, encodePositionMove, encodePosition, decodePosition
 from misc import getTick, splitCommand
 
@@ -114,6 +114,23 @@ class EventObject(object):
                 	position=encodePosition(player.x, player.y) + "\x88\x05\x05",
                 	blevel=player.baseLevel,
                 ))
+        
+        # Display all NPCs on current map
+        for npc in maps[actor.map].npcs.values():
+            actor.session.sendPacket(
+                'viewNPC',
+                actorID = npc.id,
+                sprite = npc.sprite,
+                position = encodePosition(npc.x, npc.y, npc.dir),
+            )
+        
+        # Display warps
+        for warp in maps[actor.map].warps.values():
+            actor.session.sendPacket(
+                'viewWarp',
+                actorID = warp.id,
+                position = encodePosition(warp.x, warp.y),
+            )
     
     def _registerActorView(self, actor):
         self._sendToOtherPlayersInSight(actor, actor.map, actor.x, actor.y, _(
@@ -163,12 +180,35 @@ class EventObject(object):
     # Chat
     #--------------------------------------------------
     
-    def _gmCommandError(self, actor, message):
+    def _gmCommandHelper(self, actor, message):
+        """
+        Display a help/usage message to the player, in light green.
+        """
         actor.session.sendPacket(
-            0x8e,
-            message=message+'\x00',
+            0x17f,
+            message = message + "\x00"
         )
         return True
+    
+    def _gmCommandError(self, actor, message):
+        """
+        Display an error message to the player, in red. (FIXME: Is it possible to put it in red? If not, party chat colour?)
+        """
+        actor.session.sendPacket(
+            0x8e,
+            message = message + "\x00"
+        )
+        return False
+    
+    def _gmCommandSuccess(self, actor, message):
+        """
+        Display a success message to the player, in green.
+        """
+        actor.session.sendPacket(
+            0x8e,
+            message = message + "\x00"
+        )
+        return False
     
     def _gmRandomTile(self, map):
         # Warning: Possible lock-up
@@ -196,13 +236,17 @@ class EventObject(object):
         
         attr = getattr(gm, command)
         
+        if not callable(attr):
+            return False
+        
         arguments.insert(0, actor)
         
-        if attr:
-            thread.start_new_thread(attr, tuple(arguments))
-            return True
+        # Don't pass too many arguments (-1 is for "self")
+        arguments = arguments[:(attr.func_code.co_argcount - 1)]
         
-        return False
+        thread.start_new_thread(attr, tuple(arguments))
+        
+        return True
     
     def sayChat(self, actor, message):
         if not self._doGMCommand(actor, message):
@@ -318,7 +362,7 @@ class GMCommand(EventObject):
         Warps the player to a specified map, x, and y corrdinate.
         """
         if map == None:
-            return self._gmCommandError(actor, "Usage: @warp <map> [<x> <y>]")
+            return self._gmCommandHelper(actor, "Usage: @warp <map> [<x> <y>]")
         
         if map not in maps:
             return self._gmCommandError(actor, "Invalid map.")
@@ -348,6 +392,7 @@ class GMCommand(EventObject):
             x, y = self._gmRandomTile(maps[actor.map])
         
         Event.warp(actor, x, y)
+        self._gmCommandSuccess(actor, "Jumped to %d %d." % (x, y))
     
     def refresh(self, actor):
         """
@@ -362,7 +407,7 @@ class GMCommand(EventObject):
         message = " ".join(words)
         
         if message.strip() == "":
-            return self._gmCommandError(actor, "Usage: @me <action>")
+            return self._gmCommandHelper(actor, "Usage: @me <action>")
         
         self._sendToOtherPlayersInSight(actor, actor.map, actor.x, actor.y, _(
             0x8d,
@@ -380,7 +425,7 @@ class GMCommand(EventObject):
         Kicks a user off, searches by their name.
         """
         if name == None:
-            return self._gmCommandError(actor, "Usage: @kick <name> [<reason>]")
+            return self._gmCommandHelper(actor, "Usage: @kick <name> [<reason>]")
         
         from app.inter import unsetLoginID
         
@@ -412,13 +457,15 @@ class GMCommand(EventObject):
             0x81,
             type=15,
         )
+        
+        actor.session.sendPacket(0xcd) # "User Killed/Disconnected"
     
     def effect(self, actor, id = None):
         """
         Shows a status effect to the client and characters in sight.
         """
         if id == None:
-            return self._gmCommandError(actor, "Usage: @effect <id>")
+            return self._gmCommandHelper(actor, "Usage: @effect <id>")
         
         # FIXME: Should this use _sendToPlayersOnMap?
         self._sendToPlayersInSight(actor.map, actor.x, actor.y, _(
@@ -450,13 +497,15 @@ class GMCommand(EventObject):
             type = 7,
             value = 0
         )
+        
+        self._gmCommandSuccess(actor, "You have died.")
     
     def kill(self, actor, name = None):
         """
         Kills a user.
         """
         if name == None:
-            return self._gmCommandError(actor, "Usage: @kill <name>")
+            return self._gmCommandHelper(actor, "Usage: @kill <name>")
         
         player = self._getPlayer("name", name)
         
@@ -482,6 +531,8 @@ class GMCommand(EventObject):
             type = 7,
             value = 0
         )
+        
+        self._gmCommandSuccess(actor, "Player '%s' killed." % player.name)
     
     def load(self, actor):
         """
@@ -495,6 +546,89 @@ class GMCommand(EventObject):
         """
         actor.save(actor.map, actor.x, actor.y)
         Characters.save(actor)
+        self._gmCommandSuccess(actor, "Current location set as save point.")
+    
+    def item(self, actor, select = None, amount = 1):
+        """
+        Gives the player the specified item.
+        """
+        if select == None:
+            return self._gmCommandHelper(actor, "Usage: @item <id/name> [<amount>]")
+        
+        from objects import Items, Inventory
+        
+        if select.isdigit():
+            item = Items.get(select)
+        else:
+            item = Items.get(cleanName = select, op1 = "OR", name = select)
+        
+        if not item:
+            return self._gmCommandError(actor, "Item not found.")
+        
+        inventory = Inventory.getAll(
+            characterID = actor.id
+        )
+        
+        if item.equipLocations == None:
+            # Do they already have this item?
+            stock = Inventory.get(itemID = item.id)
+            
+            if stock and stock:
+                stock.amount += int(amount)
+                Inventory.save(stock)
+            else:
+                Inventory.create(
+                    characterID = actor.id,
+                    itemID = item.id,
+                    amount = int(amount)
+                )
+            
+            actor.session.sendPacket(
+                0xa0,
+                index = len(inventory) + 2,
+                amount = int(amount),
+                itemID = item.id,
+                identified = 1,
+                broken = 0,
+                refine = 0,
+                card1 = 0,
+                card2 = 0,
+                card3 = 0,
+                card4 = 0,
+                equipLocations = item.equipLocations or 0,
+                type = item.type,
+                fail = 0
+            )
+        else:
+            for x in xrange(int(amount)):
+                Inventory.create(
+                    characterID = actor.id,
+                    itemID = item.id,
+                    amount = 1
+                )
+                
+                actor.session.sendPacket(
+                    0xa0,
+                    index = len(inventory) + 2 + x,
+                    amount = 1,
+                    itemID = item.id,
+                    identified = 1,
+                    broken = 0,
+                    refine = 0,
+                    card1 = 0,
+                    card2 = 0,
+                    card3 = 0,
+                    card4 = 0,
+                    equipLocations = item.equipLocations or 0,
+                    type = item.type,
+                    fail = 0
+                )
+    
+    def test(self, actor):
+        """docstring for test"""
+        # This seems to ping the client to fill in the "Guild" setting in the status window,
+        # but I can't figure out any important/unique data in this packet. Weird.
+        actor.session.sendRaw("\xB0\x00\x35\x00\xE8\x02\x00\x00")
     
     # def threads(self, actor, start = 0):
     #     from time import sleep
