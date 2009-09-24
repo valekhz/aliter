@@ -1,3 +1,0 @@
-# Aliter
-
-Aliter is awesome.
