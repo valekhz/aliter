@@ -271,18 +271,19 @@ ERL_NIF_TERM finish(ErlNifEnv *env, ERL_NIF_TERM *path, ERL_NIF_TERM *step, int 
     return list;
 }
 
-ERL_NIF_TERM pathfind(ErlNifEnv *env,
-                      ERL_NIF_TERM eid,
-                      ERL_NIF_TERM from,
-                      ERL_NIF_TERM to) {
+ERL_NIF_TERM pathfind(ErlNifEnv *env, int argc, ERL_NIF_TERM argv[]) {
     /*debug("----------------------------\n");*/
 
     int id, x0, y0, x1, y1;
 
+    ERL_NIF_TERM eid, from, to, head, tail;
+
+    eid = argv[0];
+    from = argv[1];
+    to = argv[2];
+
     // Get the map ID
     enif_get_int(env, eid, &id);
-
-    ERL_NIF_TERM head, tail;
 
     // Get the From X, Y
     enif_get_list_cell(env, from, &head, &tail);
